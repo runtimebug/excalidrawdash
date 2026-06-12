@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: excalidash
+      # Required — no default, so an instance never boots on a guessable password.
+      # Put POSTGRES_PASSWORD in a local .env (compose auto-loads it). Generate with:
+      # openssl rand -base64 32
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value, e.g. openssl rand -base64 32}
+      POSTGRES_DB: excalidash
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Bound to loopback only so the database is never reachable from outside the
+    # host. Drop this whole `ports` block in production (the app talks to `db`
+    # over the compose network and doesn't need a host port). Use a host port only
+    # if you must reach Postgres from outside the compose network.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U excalidash"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Same required password as the db service — no fallback, so the two can't
+      # silently diverge onto a guessable default.
+      DATABASE_URL: postgresql://excalidash:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}@db:5432/excalidash
+      # Required — no default on purpose so a misconfigured instance fails closed
+      # instead of signing sessions with a public key. Put it in a local .env file
+      # (compose auto-loads it) or your shell. Generate with: openssl rand -base64 32
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET to a long random value, e.g. openssl rand -base64 32}
+      DISABLE_REGISTRATION: ${DISABLE_REGISTRATION:-false}
+      # Set to "true" to create the demo account on first boot.
+      SEED_ON_START: ${SEED_ON_START:-false}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
