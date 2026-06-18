@@ -11,9 +11,33 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
-import { useT } from "@/i18n/I18nProvider";
+import { useT, type TFunction } from "@/i18n/I18nProvider";
 import { buildFolderTree, type FolderNode } from "@/lib/folder-tree";
+import {
+  ImportError,
+  MAX_IMPORT_BYTES,
+  buildSceneThumbnail,
+  readImportFile,
+  titleFromFilename,
+  type ImportErrorCode,
+} from "@/lib/excalidraw";
 import type { BoardSummary, FolderDTO, SessionUser, SortKey } from "@/lib/types";
+
+export type ImportResult = {
+  imported: number;
+  failed: { name: string; reason: string }[];
+};
+
+const IMPORT_ERROR_KEYS: Record<ImportErrorCode, string> = {
+  tooLarge: "import.errTooLarge",
+  notJson: "import.errNotJson",
+  notExcalidraw: "import.errNotExcalidraw",
+};
+
+function importReason(err: unknown, t: TFunction): string {
+  if (err instanceof ImportError) return t(IMPORT_ERROR_KEYS[err.code]);
+  return t("import.errFailed");
+}
 
 export type FolderReorderUpdate = {
   id: string;
@@ -60,6 +84,7 @@ type DashboardContextValue = {
   toggleFolderCollapsed: (id: string) => void;
 
   createBoard: (folderId?: string | null) => Promise<void>;
+  importBoards: (files: File[] | FileList) => Promise<ImportResult>;
   deleteBoard: (id: string) => Promise<void>;
   renameBoard: (id: string, title: string) => Promise<void>;
   setBoardTags: (id: string, tags: string[]) => Promise<void>;
@@ -248,6 +273,63 @@ export function DashboardProvider({
     [router, view]
   );
 
+  // Import each `.excalidraw` file as a new board in the current folder (or
+  // unfiled), reporting per-file failures instead of aborting the batch.
+  const importBoards = useCallback(
+    async (fileList: File[] | FileList): Promise<ImportResult> => {
+      const files = Array.from(fileList);
+      const target = view.kind === "folder" ? view.folderId : null;
+      let imported = 0;
+      const failed: ImportResult["failed"] = [];
+
+      for (const file of files) {
+        try {
+          const scene = await readImportFile(file);
+          const thumbnail = await buildSceneThumbnail(scene);
+          // Omit an empty title (file named just ".excalidraw") so the server
+          // applies its "Untitled board" default — "" fails min-length validation.
+          const title = titleFromFilename(file.name);
+          const body = JSON.stringify({
+            ...(title ? { title } : {}),
+            folderId: target,
+            elements: scene.elements,
+            appState: scene.appState,
+            files: scene.files,
+            ...(thumbnail ? { thumbnail } : {}),
+          });
+          // Check the assembled body (scene + thumbnail) — what the server caps.
+          // file.size alone misses the thumbnail and would 413 with a vague error.
+          if (new Blob([body]).size > MAX_IMPORT_BYTES) {
+            throw new ImportError("tooLarge");
+          }
+          await api("/api/boards", { method: "POST", body });
+          imported += 1;
+        } catch (err) {
+          failed.push({ name: file.name, reason: importReason(err, tRef.current) });
+        }
+      }
+
+      if (imported > 0) {
+        // Best-effort: the import already succeeded, so a folder-count refresh
+        // failure must not surface as an import error — log it and carry on.
+        await refreshFolders().catch((err) => {
+          console.error("Failed to refresh folders after import", err);
+        });
+        // Imported boards may be hidden by a favorites/tag/search filter — clear
+        // whichever is active (each triggers a refetch), else refetch directly.
+        const hadTag = activeTag !== null;
+        const wasFavorites = view.kind === "favorites";
+        const hadQuery = query.trim() !== "";
+        if (hadTag) setActiveTag(null);
+        if (wasFavorites) setView({ kind: "all" });
+        if (hadQuery) setQuery("");
+        if (!hadTag && !wasFavorites && !hadQuery) await fetchBoards();
+      }
+      return { imported, failed };
+    },
+    [view, activeTag, query, refreshFolders, fetchBoards]
+  );
+
   // Optimistic update helper for board list mutations.
   const patchBoard = useCallback(
     async (id: string, body: Record<string, unknown>) => {
@@ -372,6 +454,7 @@ export function DashboardProvider({
       reorderFolders,
       toggleFolderCollapsed,
       createBoard,
+      importBoards,
       deleteBoard,
       renameBoard,
       setBoardTags,
@@ -399,6 +482,7 @@ export function DashboardProvider({
       reorderFolders,
       toggleFolderCollapsed,
       createBoard,
+      importBoards,
       deleteBoard,
       renameBoard,
       setBoardTags,

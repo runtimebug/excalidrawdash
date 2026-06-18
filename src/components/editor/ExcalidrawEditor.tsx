@@ -13,16 +13,17 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { useT, type TFunction } from "@/i18n/I18nProvider";
 import { ChevronLeftIcon, FolderIcon, LogoIcon } from "@/components/ui/Icons";
+import {
+  buildSceneThumbnail,
+  ensureAssetPath,
+  type Scene,
+} from "@/lib/excalidraw";
 import type { BoardDetail } from "@/lib/types";
 
 type PathFolder = { id: string; name: string; parentId: string | null };
 
-// Serve Excalidraw's fonts/locale chunks from our own /public (copied at build
-// time) instead of the CDN, so a self-hosted instance works fully offline.
-if (typeof window !== "undefined") {
-  (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH =
-    "/";
-}
+// Set the self-hosted asset path before the editor bundle loads (see ensureAssetPath).
+ensureAssetPath();
 
 // Excalidraw touches `window`, so it must never render on the server.
 const Excalidraw = dynamic(
@@ -40,14 +41,6 @@ function EditorLoading() {
 
 type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error";
 const SAVE_DEBOUNCE_MS = 1200;
-
-// Loosely-typed scene refs — Excalidraw's exported types are awkward to import,
-// and we only forward the values to its own serialization helpers.
-type Scene = {
-  elements: readonly unknown[];
-  appState: Record<string, unknown>;
-  files: Record<string, unknown>;
-};
 
 export function ExcalidrawEditor({ boardId }: { boardId: string }) {
   const router = useRouter();
@@ -121,31 +114,6 @@ export function ExcalidrawEditor({ boardId }: { boardId: string }) {
     return path;
   }, [folders, board]);
 
-  const buildThumbnail = useCallback(async (scene: Scene): Promise<string | undefined> => {
-    if (scene.elements.length === 0) return undefined;
-    try {
-      const { exportToCanvas } = await import("@excalidraw/excalidraw");
-      const canvas = await exportToCanvas({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        elements: scene.elements as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        appState: {
-          ...(scene.appState as any),
-          exportBackground: true,
-          exportWithDarkMode: false,
-          viewBackgroundColor: "#ffffff",
-        },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        files: scene.files as any,
-        maxWidthOrHeight: 480,
-        exportPadding: 12,
-      });
-      return canvas.toDataURL("image/jpeg", 0.7);
-    } catch {
-      return undefined; // thumbnails are best-effort
-    }
-  }, []);
-
   const persist = useCallback(async () => {
     const scene = sceneRef.current;
     if (!scene) return;
@@ -167,7 +135,7 @@ export function ExcalidrawEditor({ boardId }: { boardId: string }) {
     setStatus("saving");
     try {
       const parsed = JSON.parse(serialized) as Scene;
-      const thumbnail = await buildThumbnail(scene);
+      const thumbnail = await buildSceneThumbnail(scene);
       await api(`/api/boards/${boardId}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -182,7 +150,7 @@ export function ExcalidrawEditor({ boardId }: { boardId: string }) {
     } catch {
       setStatus("error");
     }
-  }, [boardId, buildThumbnail]);
+  }, [boardId]);
 
   const scheduleSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);

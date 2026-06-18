@@ -3,7 +3,11 @@ import { and, asc, desc, eq, ilike, isNull, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { boards, folders } from "@/db/schema";
 import { handle, readJsonBody, requireSession, HttpError } from "@/lib/api";
-import { createBoardSchema } from "@/lib/validation";
+import {
+  createBoardSchema,
+  sceneColumns,
+  MAX_BOARD_BODY_BYTES,
+} from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -81,8 +85,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return handle(async () => {
     const session = await requireSession();
-    const body = await readJsonBody(req);
-    const { title, folderId, tags } = createBoardSchema.parse(body);
+    const body = await readJsonBody(req, MAX_BOARD_BODY_BYTES);
+    const input = createBoardSchema.parse(body);
+    const { title, folderId, tags } = input;
 
     if (folderId) {
       const [folder] = await db
@@ -102,6 +107,7 @@ export async function POST(req: NextRequest) {
         folderId: folderId ?? null,
         tags: tags ?? "",
         userId: session.uid,
+        ...sceneColumns(input),
       })
       .returning(listColumns);
 

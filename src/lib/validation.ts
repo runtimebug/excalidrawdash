@@ -44,11 +44,9 @@ export const reorderFoldersSchema = z.object({
     .max(500),
 });
 
-export const createBoardSchema = z.object({
-  title: z.string().trim().min(1).max(160).optional(),
-  folderId: z.string().nullable().optional(),
-  tags: z.string().max(300).optional(),
-});
+// Cap on a board request body, shared by the create/update routes and the client
+// import pre-check so they can't drift. Enforced on bytes received (see readJsonBody).
+export const MAX_BOARD_BODY_BYTES = 25 * 1024 * 1024;
 
 // Upper bounds on the scene payload so a single authenticated user can't balloon
 // a row to exhaust storage. Generous enough for real Excalidraw scenes (embedded
@@ -64,18 +62,57 @@ const thumbnailDataUrl = z
   .max(MAX_THUMBNAIL_CHARS, "Thumbnail is too large")
   .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/, "Invalid thumbnail");
 
-// Excalidraw scene payload + metadata for updates. Scene fields are accepted as
-// already-parsed JSON values and stored stringified.
+// Excalidraw scene fields, shared by create (import) and update. Parsed JSON in,
+// stored stringified.
+const sceneFields = {
+  elements: z.array(z.any()).max(MAX_ELEMENTS).optional(),
+  appState: z.record(z.any()).optional(),
+  files: z.record(z.any()).optional(),
+  thumbnail: thumbnailDataUrl.nullable().optional(),
+};
+
+export const createBoardSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  folderId: z.string().nullable().optional(),
+  tags: z.string().max(300).optional(),
+  ...sceneFields,
+});
+
 export const updateBoardSchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
   folderId: z.string().nullable().optional(),
   tags: z.string().max(300).optional(),
   favorite: z.boolean().optional(),
-  elements: z.array(z.any()).max(MAX_ELEMENTS).optional(),
-  appState: z.record(z.any()).optional(),
-  files: z.record(z.any()).optional(),
-  thumbnail: thumbnailDataUrl.nullable().optional(),
+  ...sceneFields,
 });
 
 export type CreateFolderInput = z.infer<typeof createFolderSchema>;
 export type UpdateBoardInput = z.infer<typeof updateBoardSchema>;
+
+// Stringify scene fields into their DB columns (thumbnail passes through); only
+// present keys are returned, so it spreads into both insert and update.
+type SceneInput = {
+  elements?: unknown[];
+  appState?: Record<string, unknown>;
+  files?: Record<string, unknown>;
+  thumbnail?: string | null;
+};
+
+export function sceneColumns(input: SceneInput): {
+  elements?: string;
+  appState?: string;
+  files?: string;
+  thumbnail?: string | null;
+} {
+  const cols: {
+    elements?: string;
+    appState?: string;
+    files?: string;
+    thumbnail?: string | null;
+  } = {};
+  if (input.elements !== undefined) cols.elements = JSON.stringify(input.elements);
+  if (input.appState !== undefined) cols.appState = JSON.stringify(input.appState);
+  if (input.files !== undefined) cols.files = JSON.stringify(input.files);
+  if (input.thumbnail !== undefined) cols.thumbnail = input.thumbnail;
+  return cols;
+}

@@ -3,15 +3,13 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { boards, folders } from "@/db/schema";
 import { handle, readJsonBody, requireSession, HttpError } from "@/lib/api";
-import { updateBoardSchema } from "@/lib/validation";
+import {
+  updateBoardSchema,
+  sceneColumns,
+  MAX_BOARD_BODY_BYTES,
+} from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
-
-// Hard ceiling on a board update body. Big enough for scenes with several
-// embedded images (base64 in `files`), small enough to stop a single request
-// from writing hundreds of MB. Enforced on the bytes actually received (see
-// readJsonBody), not just the client-supplied Content-Length header.
-const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 type Params = { params: { id: string } };
 
@@ -53,7 +51,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const session = await requireSession();
     await ownedBoardOrThrow(session.uid, params.id);
 
-    const body = await readJsonBody(req, MAX_BODY_BYTES);
+    const body = await readJsonBody(req, MAX_BOARD_BODY_BYTES);
     const input = updateBoardSchema.parse(body);
 
     if (input.folderId) {
@@ -69,17 +67,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     const data: Partial<typeof boards.$inferInsert> = {
       updatedAt: new Date(),
+      ...sceneColumns(input),
     };
     if (input.title !== undefined) data.title = input.title;
     if (input.tags !== undefined) data.tags = input.tags;
     if (input.favorite !== undefined) data.favorite = input.favorite;
     if (input.folderId !== undefined) data.folderId = input.folderId;
-    if (input.elements !== undefined)
-      data.elements = JSON.stringify(input.elements);
-    if (input.appState !== undefined)
-      data.appState = JSON.stringify(input.appState);
-    if (input.files !== undefined) data.files = JSON.stringify(input.files);
-    if (input.thumbnail !== undefined) data.thumbnail = input.thumbnail;
 
     const [board] = await db
       .update(boards)
